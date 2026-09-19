@@ -1,0 +1,25 @@
+# =============================================================================
+# Offline / network-restricted override for the ShopFlow stack.
+# =============================================================================
+#
+# Proves acceptance criterion 6: the stack has *no* outbound internet dependency
+# at runtime. With this override the compose network has no default gateway, so
+# no container can reach any host outside the compose network - while every
+# internal call keeps working.
+#
+#     docker compose -f docker-compose.yml -f docker-compose.offline.yml up -d --build
+#     docker compose -f docker-compose.yml -f docker-compose.offline.yml \
+#         exec notification-provider-emulator python -c "..."   # internal calls work
+#     docker compose -f docker-compose.yml -f docker-compose.offline.yml \
+#         run --rm smoke-test                                   # the completion proof
+#
+# Run the smoke test *inside* the network (`run --rm smoke-test`): Docker Engine
+# does not publish ports on an internal network, so the host-side script
+# (`python scripts/smoke_test.py`) is only meaningful without this override.
+#
+# Images must be built first (`docker compose build`); builds pull packages at
+# build time, which is expected and allowed - it is the *runtime* that must be
+# self-contained.
+networks:
+  shopflow:
+    internal: true

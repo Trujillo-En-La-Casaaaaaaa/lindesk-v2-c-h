@@ -1,0 +1,18 @@
+# Build context of the shopflow-orders image (contracts.md §5/§8/§9/§11).
+# The service owns no static asset and needs no test file at runtime.
+.git
+.handoff
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+tests
+docs
+*.md
+.env
+.env.*
+!.env.example

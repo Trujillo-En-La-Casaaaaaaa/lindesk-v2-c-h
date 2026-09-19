@@ -1,0 +1,511 @@
+# =============================================================================
+# ShopFlow - local Docker runtime for the whole ecosystem (shopflow-infra)
+# =============================================================================
+#
+# One command brings up three independent stores, the broker, the notification
+# provider emulator and all five services in dependency order, applies each
+# service's own migrations, invokes the inventory-owned deterministic seed, gates
+# on health and offers a black-box smoke test:
+#
+#     docker compose up -d --build
+#
+# Startup order (dependency-driven):
+#     stores + broker healthy -> per-service migrations -> inventory seed
+#     -> services healthy -> gateway healthy -> healthcheck-gate -> web
+#
+# Interface names, ports of record and environment variables come from
+# contracts.md (§1-§13, §11 for configuration). Local defaults are throwaway and
+# credential-free (see .env.example); never put real credentials in this file.
+#
+# No service needs the internet at runtime: images are built once and then the
+# whole stack talks only over the `shopflow` compose network. For the strictest
+# proof see docker-compose.offline.yml, which removes the outbound route.
+name: shopflow
+
+# -----------------------------------------------------------------------------
+# Shared fragments
+# -----------------------------------------------------------------------------
+# Any service container of this ecosystem is a Python image, so /health is polled
+# with the standard library (no curl/wget dependency, works offline).
+x-service-healthcheck: &service-healthcheck
+  test:
+    - CMD
+    - python
+    - -c
+    - "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status == 200 else 1)"
+  interval: 5s
+  timeout: 3s
+  retries: 24
+  start_period: 15s
+
+x-emulator-healthcheck: &emulator-healthcheck
+  test:
+    - CMD
+    - python
+    - -c
+    - "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2).status == 200 else 1)"
+  interval: 5s
+  timeout: 3s
+  retries: 12
+  start_period: 10s
+
+# One writable owner per datum: every service receives only its own database url
+# (contracts.md §3/§9/§11). No service ever sees another service's DATABASE_URL.
+x-database-urls:
+  orders: &orders-database-url "postgresql://${SHOPFLOW_DB_USER:-shopflow}:${SHOPFLOW_DB_PASSWORD:-shopflow}@orders-db:5432/${ORDERS_DB_NAME:-shopflow_orders}"
+  inventory: &inventory-database-url "postgresql://${SHOPFLOW_DB_USER:-shopflow}:${SHOPFLOW_DB_PASSWORD:-shopflow}@inventory-db:5432/${INVENTORY_DB_NAME:-shopflow_inventory}"
+  notifications: &notifications-database-url "postgresql://${SHOPFLOW_DB_USER:-shopflow}:${SHOPFLOW_DB_PASSWORD:-shopflow}@notifications-db:5432/${NOTIFICATIONS_DB_NAME:-shopflow_notifications}"
+
+# The broker url the services receive is the documented contracts.md §11 value, so
+# setting BROKER_URL in `.env` actually takes effect. It must agree with the
+# broker's own credentials below; a mismatch makes `broker-init` fail loudly and
+# the services never start (rather than failing silently later).
+x-broker-url: &broker-url "${BROKER_URL:-amqp://shopflow:shopflow@message-broker:5672/}"
+x-inventory-base-url: &inventory-base-url "${INVENTORY_BASE_URL:-http://shopflow-inventory:8000}"
+x-orders-base-url: &orders-base-url "${ORDERS_BASE_URL:-http://shopflow-orders:8000}"
+x-provider-base-url: &provider-base-url "${PROVIDER_BASE_URL:-http://notification-provider-emulator:8000}"
+x-request-timeout: &request-timeout ${REQUEST_TIMEOUT_SECONDS:-5}
+x-release-retry-interval: &release-retry-interval ${RELEASE_RETRY_INTERVAL_SECONDS:-5}
+# Baked into the browser bundle at build time; this is the variable the
+# shopflow-web repository documents (`VITE_GATEWAY_BASE_URL`).
+x-vite-gateway-base-url: &vite-gateway-base-url "${VITE_GATEWAY_BASE_URL:-http://localhost:8080}"
+
+x-inventory-environment: &inventory-environment
+  DATABASE_URL: *inventory-database-url
+  PORT: "8000"
+
+x-orders-environment: &orders-environment
+  DATABASE_URL: *orders-database-url
+  BROKER_URL: *broker-url
+  INVENTORY_BASE_URL: *inventory-base-url
+  REQUEST_TIMEOUT_SECONDS: *request-timeout
+  RELEASE_RETRY_INTERVAL_SECONDS: *release-retry-interval
+  PORT: "8000"
+
+x-notifications-environment: &notifications-environment
+  DATABASE_URL: *notifications-database-url
+  BROKER_URL: *broker-url
+  PROVIDER_BASE_URL: *provider-base-url
+  REQUEST_TIMEOUT_SECONDS: *request-timeout
+  PORT: "8000"
+
+x-gateway-environment: &gateway-environment
+  ORDERS_BASE_URL: *orders-base-url
+  INVENTORY_BASE_URL: *inventory-base-url
+  REQUEST_TIMEOUT_SECONDS: *request-timeout
+  PORT: "8000"
+
+# -----------------------------------------------------------------------------
+# Services
+# -----------------------------------------------------------------------------
+services:
+
+  # ---------------------------------------------------------------------------
+  # data-store-services: one independent relational instance per owning service
+  # ---------------------------------------------------------------------------
+  orders-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${SHOPFLOW_DB_USER:-shopflow}
+      POSTGRES_PASSWORD: ${SHOPFLOW_DB_PASSWORD:-shopflow}
+      POSTGRES_DB: ${ORDERS_DB_NAME:-shopflow_orders}
+    ports:
+      - "${ORDERS_DB_PORT:-5433}:5432"
+    volumes:
+      - orders-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    networks:
+      - shopflow
+    restart: unless-stopped
+
+  inventory-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${SHOPFLOW_DB_USER:-shopflow}
+      POSTGRES_PASSWORD: ${SHOPFLOW_DB_PASSWORD:-shopflow}
+      POSTGRES_DB: ${INVENTORY_DB_NAME:-shopflow_inventory}
+    ports:
+      - "${INVENTORY_DB_PORT:-5434}:5432"
+    volumes:
+      - inventory-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    networks:
+      - shopflow
+    restart: unless-stopped
+
+  notifications-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${SHOPFLOW_DB_USER:-shopflow}
+      POSTGRES_PASSWORD: ${SHOPFLOW_DB_PASSWORD:-shopflow}
+      POSTGRES_DB: ${NOTIFICATIONS_DB_NAME:-shopflow_notifications}
+    ports:
+      - "${NOTIFICATIONS_DB_PORT:-5435}:5432"
+    volumes:
+      - notifications-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    networks:
+      - shopflow
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # broker-service: RabbitMQ with the durable topology of contracts.md §8
+  # ---------------------------------------------------------------------------
+  message-broker:
+    image: rabbitmq:3.13-management-alpine
+    hostname: message-broker
+    environment:
+      RABBITMQ_DEFAULT_USER: ${BROKER_USER:-shopflow}
+      RABBITMQ_DEFAULT_PASS: ${BROKER_PASSWORD:-shopflow}
+      RABBITMQ_DEFAULT_VHOST: ${BROKER_VHOST:-/}
+    ports:
+      - "${BROKER_AMQP_PORT:-5672}:5672"
+      - "${BROKER_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - broker-data:/var/lib/rabbitmq
+      # Declarative topology: durable topic exchange `shopflow.orders`, durable
+      # queue `shopflow.notifications.order-events` and the two bindings. Some
+      # Docker hosts may not pick the config file up in time, so `broker-init`
+      # below re-ensures and verifies the same topology before any service starts.
+      - ./broker/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./broker/definitions.json:/etc/rabbitmq/definitions.json:ro
+    healthcheck:
+      # `ping` alone can succeed before the AMQP listener accepts connections;
+      # check_port_connectivity makes "healthy" mean "clients can connect".
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    networks:
+      - shopflow
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # broker-service bootstrap: idempotently declares and verifies the durable
+  # exchange, queue and bindings after the broker is healthy. Exits non-zero if
+  # the topology cannot be ensured, so a broken broker can never look "up".
+  # ---------------------------------------------------------------------------
+  broker-init:
+    build:
+      context: ./broker
+    environment:
+      BROKER_URL: *broker-url
+      BROKER_INIT_TIMEOUT_SECONDS: "${BROKER_INIT_TIMEOUT_SECONDS:-60}"
+    depends_on:
+      message-broker:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - shopflow
+
+  # ---------------------------------------------------------------------------
+  # provider-emulator-service: deterministic, offline notification provider (§7)
+  # ---------------------------------------------------------------------------
+  notification-provider-emulator:
+    build:
+      context: ./emulator
+    environment:
+      PORT: "8000"
+    ports:
+      - "${PROVIDER_PORT:-8081}:8000"
+    healthcheck: *emulator-healthcheck
+    networks:
+      - shopflow
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # migration-runner: each service's own migration tool, dependency order
+  # (inventory -> orders -> notifications). One-shot jobs; nothing is created by
+  # infrastructure code itself.
+  # ---------------------------------------------------------------------------
+  migrate-inventory:
+    build:
+      context: ../shopflow-inventory
+    environment: *inventory-environment
+    entrypoint: ["sh", "-c"]
+    command: ["${INVENTORY_MIGRATION_COMMAND:-alembic upgrade head}"]
+    depends_on:
+      inventory-db:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - shopflow
+
+  migrate-orders:
+    build:
+      context: ../shopflow-orders
+    environment: *orders-environment
+    entrypoint: ["sh", "-c"]
+    command: ["${ORDERS_MIGRATION_COMMAND:-alembic upgrade head}"]
+    depends_on:
+      orders-db:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - shopflow
+
+  migrate-notifications:
+    build:
+      context: ../shopflow-notifications
+    environment: *notifications-environment
+    entrypoint: ["sh", "-c"]
+    command: ["${NOTIFICATIONS_MIGRATION_COMMAND:-alembic upgrade head}"]
+    depends_on:
+      notifications-db:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - shopflow
+
+  # ---------------------------------------------------------------------------
+  # seed-runner: invokes the inventory-owned deterministic seed command (§10)
+  # ---------------------------------------------------------------------------
+  seed-inventory:
+    build:
+      context: ../shopflow-inventory
+    environment: *inventory-environment
+    entrypoint: ["sh", "-c"]
+    command: ["${INVENTORY_SEED_COMMAND:-python -m app.seed}"]
+    depends_on:
+      migrate-inventory:
+        condition: service_completed_successfully
+    restart: "no"
+    networks:
+      - shopflow
+
+  # ---------------------------------------------------------------------------
+  # shopflow-inventory (catalog + stock owner)
+  # ---------------------------------------------------------------------------
+  shopflow-inventory:
+    build:
+      context: ../shopflow-inventory
+    environment: *inventory-environment
+    ports:
+      - "${INVENTORY_PORT:-8002}:8000"
+    depends_on:
+      inventory-db:
+        condition: service_healthy
+      migrate-inventory:
+        condition: service_completed_successfully
+      seed-inventory:
+        condition: service_completed_successfully
+    healthcheck: *service-healthcheck
+    networks:
+      shopflow:
+        aliases:
+          - inventory
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # shopflow-orders (order lifecycle + outbox owner)
+  # ---------------------------------------------------------------------------
+  shopflow-orders:
+    build:
+      context: ../shopflow-orders
+    environment: *orders-environment
+    ports:
+      - "${ORDERS_PORT:-8001}:8000"
+    depends_on:
+      orders-db:
+        condition: service_healthy
+      message-broker:
+        condition: service_healthy
+      broker-init:
+        condition: service_completed_successfully
+      migrate-orders:
+        condition: service_completed_successfully
+      shopflow-inventory:
+        condition: service_healthy
+    healthcheck: *service-healthcheck
+    networks:
+      shopflow:
+        aliases:
+          - orders
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # shopflow-notifications (notification owner; consumes order events)
+  # ---------------------------------------------------------------------------
+  shopflow-notifications:
+    build:
+      context: ../shopflow-notifications
+    environment: *notifications-environment
+    ports:
+      - "${NOTIFICATIONS_PORT:-8003}:8000"
+    depends_on:
+      notifications-db:
+        condition: service_healthy
+      message-broker:
+        condition: service_healthy
+      broker-init:
+        condition: service_completed_successfully
+      notification-provider-emulator:
+        condition: service_healthy
+      migrate-notifications:
+        condition: service_completed_successfully
+    healthcheck: *service-healthcheck
+    networks:
+      shopflow:
+        aliases:
+          - notifications
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # shopflow-gateway (the only public surface, contracts.md §2)
+  # ---------------------------------------------------------------------------
+  shopflow-gateway:
+    build:
+      context: ../shopflow-gateway
+    environment: *gateway-environment
+    ports:
+      - "${GATEWAY_PORT:-8080}:8000"
+    depends_on:
+      shopflow-orders:
+        condition: service_healthy
+      shopflow-inventory:
+        condition: service_healthy
+    healthcheck: *service-healthcheck
+    networks:
+      shopflow:
+        aliases:
+          - gateway
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # healthcheck-gate: one-shot verification that every service answers /health
+  # ---------------------------------------------------------------------------
+  healthcheck-gate:
+    build:
+      context: ./scripts
+    command:
+      - python
+      - wait_for_health.py
+      - --timeout
+      - "${HEALTH_GATE_TIMEOUT:-180}"
+      - --interval
+      - "${HEALTH_GATE_INTERVAL:-2}"
+      - --urls
+      - "http://shopflow-inventory:8000/health,http://shopflow-orders:8000/health,http://shopflow-notifications:8000/health,http://notification-provider-emulator:8000/health,http://shopflow-gateway:8000/health"
+    depends_on:
+      shopflow-inventory:
+        condition: service_healthy
+      shopflow-orders:
+        condition: service_healthy
+      shopflow-notifications:
+        condition: service_healthy
+      shopflow-gateway:
+        condition: service_healthy
+      notification-provider-emulator:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - shopflow
+
+  # ---------------------------------------------------------------------------
+  # shopflow-web (browser SPA; talks to the gateway from the browser)
+  # ---------------------------------------------------------------------------
+  shopflow-web:
+    build:
+      context: ../shopflow-web
+      args:
+        # Vite bakes this in at build time; the browser reaches the gateway on
+        # the host-published port, never on an internal service name.
+        VITE_GATEWAY_BASE_URL: *vite-gateway-base-url
+    ports:
+      - "${WEB_PORT:-3000}:${WEB_CONTAINER_PORT:-80}"
+    depends_on:
+      shopflow-gateway:
+        condition: service_healthy
+      healthcheck-gate:
+        condition: service_completed_successfully
+    healthcheck:
+      # The SPA image is the only container whose base image this repository does
+      # not own, so probe with whatever HTTP client it ships: busybox wget
+      # (alpine images), curl (Debian nginx), or node (Debian node). Measured
+      # tool matrix: nginx:alpine = wget+curl, nginx:latest = curl,
+      # node:20-alpine = wget+node, node:20-slim = node. The documented port is
+      # probed first, then the usual static-server ports.
+      test:
+        - CMD-SHELL
+        - "for p in ${WEB_CONTAINER_PORT:-80} 3000 4173 8080 80; do u=\"http://127.0.0.1:$$p/\"; wget -q -T 2 -O /dev/null \"$$u\" || curl -fsS -m 2 -o /dev/null \"$$u\" || node -e \"require('http').get('$$u', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))\" || continue; exit 0; done; exit 1"
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+    networks:
+      shopflow:
+        aliases:
+          - web
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # smoke-test-suite: opt-in one-shot black-box verification through the gateway
+  #     docker compose run --rm smoke-test
+  # ---------------------------------------------------------------------------
+  smoke-test:
+    profiles:
+      - tools
+    build:
+      context: ./scripts
+    command: ["python", "smoke_test.py"]
+    environment:
+      GATEWAY_BASE_URL: "http://shopflow-gateway:8000"
+      # PROVIDER_BASE_URL (contracts.md §11) is the in-network name; the smoke
+      # test reads it from SHOPFLOW_PROVIDER_URL so `.env` can never confuse the
+      # host-side default with the service name.
+      SHOPFLOW_PROVIDER_URL: *provider-base-url
+    depends_on:
+      shopflow-gateway:
+        condition: service_healthy
+      notification-provider-emulator:
+        condition: service_healthy
+      healthcheck-gate:
+        condition: service_completed_successfully
+    restart: "no"
+    networks:
+      - shopflow
+
+# -----------------------------------------------------------------------------
+# Volumes: `docker compose down -v` drops all of them, so a repeat run starts
+# from the same deterministic seed.
+# -----------------------------------------------------------------------------
+volumes:
+  orders-db-data:
+  inventory-db-data:
+  notifications-db-data:
+  broker-data:
+
+# -----------------------------------------------------------------------------
+# One compose network: every cross-service call stays on it and no service has an
+# outbound dependency.
+#
+# `internal: true` removes the outbound route completely, but Docker Engine does
+# not publish ports for containers on an internal network - so the switch is off
+# by default, because the host needs localhost:8080 for the public gateway. To
+# run with networking restricted to the compose network, use the documented
+# override, which also runs the smoke test inside the network:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.offline.yml up -d --build
+#     docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm smoke-test
+# -----------------------------------------------------------------------------
+networks:
+  shopflow:
+    name: shopflow
+    driver: bridge
+    internal: ${SHOPFLOW_NETWORK_INTERNAL:-false}

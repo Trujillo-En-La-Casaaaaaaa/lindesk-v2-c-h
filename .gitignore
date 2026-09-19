@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.venv/
+venv/
+__pycache__/
+.scannerwork/
+.pipeline/
+.env
+.env.*
+*.pyc
+.DS_Store

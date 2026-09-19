@@ -1,0 +1,13 @@
+# ShopFlow notifications test/tooling lockfile - fully pinned.
+#
+# -r requirements.txt keeps the runtime lockfile authoritative; the extra entries
+# are the pytest toolchain used by the unit, contract, integration and failure
+# suites plus the linter. The HTTP client used by the suites is already part of
+# the runtime lockfile (httpx, used by the provider adapter).
+-r requirements.txt
+iniconfig==2.3.0
+packaging==26.2
+pluggy==1.6.0
+Pygments==2.20.0
+pytest==9.1.1
+ruff==0.15.18

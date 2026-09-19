@@ -1,0 +1,91 @@
+"""The order domain of shopflow-orders.
+
+Pure Python: the order aggregate and its status machine (``order``), the
+cancellation policy (``cancellation``) and the domain error codes of
+contracts.md §12 (``errors``). Nothing in this package imports FastAPI, SQLAlchemy
+or the broker client (acceptance criterion 12).
+"""
+
+from app.domain.cancellation import (
+    MAX_REASON_LENGTH,
+    CancellationAction,
+    CancellationDecision,
+    decide_cancellation,
+    normalize_reason,
+)
+from app.domain.errors import (
+    DomainError,
+    IdempotencyConflict,
+    InsufficientStock,
+    InternalError,
+    InvalidReason,
+    InvalidStatusTransition,
+    InventoryUnavailable,
+    NotFound,
+    OrderNotCancellable,
+    OrderShipped,
+    UnknownProduct,
+    ValidationError,
+)
+from app.domain.order import (
+    ALLOWED_TRANSITIONS,
+    CANCELLED,
+    CONFIRMED,
+    CREATED,
+    FAILED,
+    MONEY_QUANTUM,
+    SHIPPED,
+    InventoryReleaseState,
+    Order,
+    OrderLine,
+    OrderStatus,
+    RequestedLine,
+    as_utc,
+    format_timestamp,
+    money_as_number,
+    order_total,
+    quantize_money,
+    transition_allowed,
+    utc_now,
+    validate_order_request,
+)
+
+__all__ = [
+    "ALLOWED_TRANSITIONS",
+    "CANCELLED",
+    "CONFIRMED",
+    "CREATED",
+    "CancellationAction",
+    "CancellationDecision",
+    "DomainError",
+    "FAILED",
+    "IdempotencyConflict",
+    "InsufficientStock",
+    "InternalError",
+    "InvalidReason",
+    "InvalidStatusTransition",
+    "InventoryReleaseState",
+    "InventoryUnavailable",
+    "MAX_REASON_LENGTH",
+    "MONEY_QUANTUM",
+    "NotFound",
+    "Order",
+    "OrderLine",
+    "OrderNotCancellable",
+    "OrderShipped",
+    "OrderStatus",
+    "RequestedLine",
+    "SHIPPED",
+    "UnknownProduct",
+    "ValidationError",
+    "as_utc",
+    "decide_cancellation",
+    "format_timestamp",
+    "money_as_number",
+    "normalize_reason",
+    "order_total",
+    "quantize_money",
+    "transition_allowed",
+    "utc_now",
+    "validate_order_request",
+]

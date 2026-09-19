@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shopflow-gateway"
+version = "1.0.0"
+description = "Public HTTP surface (edge adapter) for the ShopFlow storefront"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "annotated-doc==0.0.4",
+  "annotated-types==0.7.0",
+  "anyio==4.14.0",
+  "certifi==2026.6.17",
+  "click==8.4.1",
+  "colorama==0.4.6",
+  "fastapi==0.138.0",
+  "h11==0.16.0",
+  "httpcore==1.0.9",
+  "httpx==0.28.1",
+  "idna==3.18",
+  "pydantic==2.13.4",
+  "pydantic-core==2.46.4",
+  "pydantic-settings==2.14.2",
+  "python-dotenv==1.2.2",
+  "starlette==1.3.1",
+  "typing-extensions==4.15.0",
+  "typing-inspection==0.4.2",
+  "uvicorn==0.49.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "iniconfig==2.3.0",
+  "packaging==26.2",
+  "pluggy==1.6.0",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "pytest-httpx==0.36.2",
+  "ruff==0.15.18",
+]
+
+[tool.setuptools]
+packages = [
+  "app",
+  "app.middleware",
+  "app.routes",
+  "app.routing",
+  "app.security",
+  "app.upstream",
+  "app.validation",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B008"]

@@ -1,0 +1,18 @@
+# Build context hygiene: the image only needs the application package, the
+# migration scripts and the pinned lockfile.
+.git
+.gitignore
+.handoff
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+tests
+docs
+*.md
+!README.md
+.env
+*.db

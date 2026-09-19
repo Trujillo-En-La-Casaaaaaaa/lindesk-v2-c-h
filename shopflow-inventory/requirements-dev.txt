@@ -1,0 +1,16 @@
+# ShopFlow inventory test/tooling lockfile - fully pinned.
+#
+# -r requirements.txt keeps the runtime lockfile authoritative; the extra entries
+# are the HTTP client used by the contract/integration suites (httpx, pulled in
+# by starlette's TestClient) and the pytest/ruff toolchain.
+-r requirements.txt
+certifi==2026.6.17
+httpcore==1.0.9
+httpx==0.28.1
+iniconfig==2.3.0
+packaging==26.2
+pluggy==1.6.0
+Pygments==2.20.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.15.18

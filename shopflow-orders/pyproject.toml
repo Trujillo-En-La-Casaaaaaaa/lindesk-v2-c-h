@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shopflow-orders"
+version = "1.0.0"
+description = "ShopFlow order lifecycle, cancellation rules and transactional outbox (hexagonal FastAPI service)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic==1.18.4",
+  "annotated-doc==0.0.4",
+  "annotated-types==0.7.0",
+  "anyio==4.14.0",
+  "certifi==2026.6.17",
+  "click==8.4.1",
+  "colorama==0.4.6",
+  "fastapi==0.138.0",
+  "greenlet==3.5.2",
+  "h11==0.16.0",
+  "httpcore==1.0.9",
+  "httpx==0.28.1",
+  "idna==3.18",
+  "Mako==1.3.12",
+  "MarkupSafe==3.0.3",
+  "pika==1.4.4",
+  "psycopg2-binary==2.9.12",
+  "pydantic==2.13.4",
+  "pydantic-core==2.46.4",
+  "pydantic-settings==2.14.2",
+  "python-dotenv==1.2.2",
+  "SQLAlchemy==2.0.51",
+  "starlette==1.3.1",
+  "typing-extensions==4.15.0",
+  "typing-inspection==0.4.2",
+  "uvicorn==0.49.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "iniconfig==2.3.0",
+  "packaging==26.2",
+  "pluggy==1.6.0",
+  "Pygments==2.20.0",
+  "pytest==9.1.1",
+  "ruff==0.15.18",
+]
+
+[tool.setuptools]
+packages = [
+  "app",
+  "app.adapters",
+  "app.api",
+  "app.db",
+  "app.domain",
+  "app.events",
+  "app.ports",
+  "app.usecases",
+  "app.workers",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+  "integration: requires the orders store and shopflow-inventory from shopflow-infra",
+  "e2e: requires the whole composed ShopFlow stack through the public gateway",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B008"]
